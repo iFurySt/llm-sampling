@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LLM 采样可视化</title>
+
+  <!-- Bootstrap -->
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+
+  <!-- ===== Embedded CSS ===== -->
+  <style>
+    body { font-family: sans-serif; }
+    .card-lite {
+      border: 1px solid #e4e8f0;
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7f9fd 100%);
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+    }
+
+    /* Token chips */
+    .token-chip {
+      display: inline-block;
+      background: #eef1f6;
+      border-radius: 12px;
+      padding: 4px 8px;
+      margin: 3px;
+      font-size: 0.85rem;
+      border: 1px solid #b5c1d4;
+    }
+    .token-chip:hover {
+      background: #e2ebff;
+      cursor: pointer;
+    }
+
+    /* Horizontal chart */
+    .chart-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 4px;
+      padding: 2px 4px;
+    }
+    .chart-row:hover { background: #f5f5f5; }
+
+    .token-label {
+      width: 80px;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .prob-label {
+      width: 60px;
+      text-align: right;
+      font-size: 0.85rem;
+      color: gray;
+    }
+    .chart-bar {
+      height: 16px;
+      border-radius: 4px;
+      background-color: rgb(96, 143, 255);
+      opacity: 0.6;
+      margin-left: 6px;
+      transition: width 0.2s ease-out;
+    }
+
+    /* Vertical chart */
+    .vertical-chart {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 170px;
+      padding: 10px 8px;
+      border: 1px dashed #d8deeb;
+      border-radius: 10px;
+      background: #fff;
+    }
+    .vertical-chart.empty {
+      justify-content: center;
+      align-items: center;
+      color: #8b95a5;
+      font-size: 0.9rem;
+    }
+    .vertical-chart.empty::after { content: "运行后展示概率分布"; }
+
+    .vbar {
+      flex: 1;
+      min-width: 6px;
+      border-radius: 4px 4px 0 0;
+      background: #dfe6f5;
+      position: relative;
+      transition: height 0.2s ease, background 0.2s ease;
+    }
+    .vbar.active-topk { background: #6b9bff; }
+    .vbar.active-topp { background: #34c38f; opacity: 0.8; }
+    .vbar.active-minp { background: #ffad47; }
+    .vbar:hover { filter: brightness(1.05); }
+
+    .cutoff-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      border-top: 1px dashed #ffad47;
+      opacity: 0.9;
+    }
+    .chart-meta { font-size: 0.9rem; color: #6c757d; }
+  </style>
+</head>
+
+<body class="container my-4">
+  <h2 class="text-center mb-4">LLM 采样可视化</h2>
+
+  <!-- ==== Prompt ==== -->
+  <textarea id="prompt" class="form-control mb-3" rows="2">你好，我想</textarea>
+
+  <!-- ==== Controls ==== -->
+  <div class="row text-center mb-3">
+    <div class="col-3">
+      <label>温度 (Temperature): <span id="tLabel">1.0</span></label>
+      <input type="range" id="temp" class="form-range" min="0.1" max="2" step="0.1" value="1">
+    </div>
+    <div class="col-3">
+      <label>Top-k：<span id="kLabel">3</span></label>
+      <input type="range" id="topk" class="form-range" min="1" max="20" step="1" value="3">
+    </div>
+    <div class="col-3">
+      <label>Top-p：<span id="pLabel">0.6</span></label>
+      <input type="range" id="topp" class="form-range" min="0.05" max="1" step="0.05" value="0.6">
+    </div>
+    <div class="col-3">
+      <label>Min-p：<span id="minpLabel">0.02</span></label>
+      <input type="range" id="minp" class="form-range" min="0.01" max="0.2" step="0.01" value="0.02">
+    </div>
+  </div>
+
+  <button class="btn btn-primary w-100 mb-4" onclick="runSampling()">运行</button>
+
+  <!-- ==== Token Chips ==== -->
+  <h5>已保留 Token</h5>
+  <b>Top-k：</b> <div id="chips_topk" class="mb-2"></div>
+  <b>Top-p：</b> <div id="chips_topp" class="mb-2"></div>
+  <b>Min-p：</b> <div id="chips_minp" class="mb-3"></div>
+
+  <!-- ==== Vertical Bar Charts ==== -->
+  <h5 class="mt-2">采样截断可视化</h5>
+  <p class="text-muted small">柱高按本次 logits 归一化，颜色表示截断范围。</p>
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="card-lite h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong>Top-k</strong>
+          <span class="chart-meta" id="topkMeta"></span>
+        </div>
+        <div class="vertical-chart empty" id="chartTopk"></div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card-lite h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong>Top-p</strong>
+          <span class="chart-meta" id="toppMeta"></span>
+        </div>
+        <div class="vertical-chart empty" id="chartTopp"></div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card-lite h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong>Min-p</strong>
+          <span class="chart-meta" id="minpMeta"></span>
+        </div>
+        <div class="vertical-chart empty" id="chartMinp"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==== Horizontal Chart ==== -->
+  <h5>Token 概率（相对）</h5>
+  <p class="text-muted small">条宽对本批次最大概率归一化（最大值视为 100%）。</p>
+  <div id="chartContainer"></div>
+
+<!-- ===== Embedded JS ===== -->
+<script>
+const maxBarWidth = 200;  // max px width
+const labelIds = { temp: "tLabel", topk: "kLabel", topp: "pLabel", minp: "minpLabel" };
+
+function makeChips(arr){
+  return arr.map(t => `<span class="token-chip">${t || '[空]'}</span>`).join("");
+}
+
+function renderHorizontalChart(data){
+  const container = document.getElementById("chartContainer");
+  container.innerHTML = "";
+
+  if (!data.probs || !data.probs.length) {
+    container.textContent = "点击「运行」后展示概率分布";
+    return;
+  }
+
+  // 🔥 相对归一化，最大值 = 100%
+  const maxP = Math.max(...data.probs);
+  if (!maxP) {
+    container.textContent = "未取得有效概率";
+    return;
+  }
+
+  data.tokens.forEach((token, i) => {
+    const p = data.probs[i];
+    const normWidth = Math.round((p / maxP) * maxBarWidth) + "px";
+
+    const row = document.createElement("div");
+    row.className = "chart-row";
+    row.innerHTML = `
+      <div class="token-label">${token || '[空]'}</div>
+      <div class="prob-label">${(p * 100).toFixed(2)}%</div>
+      <div class="chart-bar" style="width:${normWidth}"></div>
+    `;
+
+    container.appendChild(row);
+  });
+}
+
+function renderVerticalCharts(data){
+  const probs = data.probs || [];
+  const tokens = data.tokens || [];
+  if (!probs.length) return;
+
+  const maxP = Math.max(...probs);
+  if (!maxP) return;
+
+  const topkVal = parseInt(document.getElementById("topk").value, 10);
+  const topPVal = parseFloat(document.getElementById("topp").value);
+  const minPVal = parseFloat(document.getElementById("minp").value);
+
+  let cumulative = 0;
+  let topPIdx = probs.length - 1;
+  let topPSum = 0;
+  let reached = false;
+  for (let i = 0; i < probs.length; i++) {
+    cumulative += probs[i];
+    if (!reached && cumulative >= topPVal) {
+      topPIdx = i;
+      topPSum = cumulative;
+      reached = true;
+    }
+  }
+  if (!reached) topPSum = cumulative;
+
+  const minLineHeight = Math.min(100, (minPVal / maxP) * 100);
+
+  function buildBars(chartId, activeCheck, activeClass, extraLine = null) {
+    const chart = document.getElementById(chartId);
+    chart.classList.remove("empty");
+    chart.innerHTML = "";
+
+    probs.forEach((p, idx) => {
+      const bar = document.createElement("div");
+      bar.className = "vbar" + (activeCheck(idx, p) ? " " + activeClass : "");
+      bar.style.height = Math.max(4, (p / maxP) * 100) + "%";
+      bar.title = `${tokens[idx] || '[空]'} · ${(p * 100).toFixed(2)}%`;
+      chart.appendChild(bar);
+    });
+
+    if (extraLine !== null) {
+      const line = document.createElement("div");
+      line.className = "cutoff-line";
+      line.style.bottom = extraLine;
+      chart.appendChild(line);
+    }
+  }
+
+  buildBars("chartTopk", (idx) => idx < topkVal, "active-topk");
+  document.getElementById("topkMeta").textContent = `前 ${topkVal} 个`;
+
+  buildBars("chartTopp", (idx) => idx <= topPIdx, "active-topp");
+  const toppPercent = Math.min(topPSum * 100, 100).toFixed(1);
+  document.getElementById("toppMeta").textContent = `累计约 ${toppPercent}%`;
+
+  buildBars("chartMinp", (_idx, p) => p >= minPVal, "active-minp", `${minLineHeight}%`);
+  document.getElementById("minpMeta").textContent = `阈值 ${minPVal}`;
+}
+
+function updateUI(data){
+  document.getElementById("chips_topk").innerHTML = makeChips(data.topk);
+  document.getElementById("chips_topp").innerHTML = makeChips(data.topp);
+  document.getElementById("chips_minp").innerHTML = makeChips(data.minp);
+
+  renderHorizontalChart(data);
+  renderVerticalCharts(data);
+}
+
+function runSampling(){
+  fetch("/sample", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      prompt: document.getElementById("prompt").value,
+      temperature: document.getElementById("temp").value,
+      top_k: document.getElementById("topk").value,
+      top_p: document.getElementById("topp").value,
+      min_p: document.getElementById("minp").value,
+    })
+  }).then(res => res.json()).then(updateUI);
+}
+
+// slider labels
+Object.keys(labelIds).forEach(id => {
+  const input = document.getElementById(id);
+  input.oninput = () => {
+    document.getElementById(labelIds[id]).textContent = input.value;
+  };
+  input.oninput();
+});
+</script>
+
+</body>
+</html>
